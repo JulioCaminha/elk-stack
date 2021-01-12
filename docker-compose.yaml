@@ -1,0 +1,109 @@
+version: '3.3'
+
+services:
+  apm-server:
+    build:
+      context: apm-server/
+    container_name: apm-server
+    depends_on:
+      - elasticsearch
+      - kibana
+    restart: on-failure
+    cap_add: ["CHOWN", "DAC_OVERRIDE", "SETGID", "SETUID"]
+    cap_drop: ["ALL"]
+    ports:
+      - "8200:8200"
+    networks:
+      - elk
+    command: >
+      apm-server -e
+      -E apm-server.rum.enabled=true
+      -E setup.kibana.host=kibana:5601
+      -E setup.template.settings.index.number_of_replicas=0
+      -E apm-server.kibana.enabled=true
+      -E apm-server.kibana.host=kibana:5601
+      -E output.elasticsearch.hosts=["elasticsearch:9200"]
+    healthcheck:
+      interval: 10s
+      retries: 10
+      test: curl --write-out 'HTTP %{http_code}' --fail --silent --output /dev/null http://192.168.2.160:8200/
+
+  metricbeat:
+    build:
+      context: metricbeat/
+    container_name: metricbeat
+    depends_on:
+      - elasticsearch
+    user: root
+    volumes:
+      - /proc:/hostfs/proc:ro
+      - /sys/fs/cgroup:/hostfs/sys/fs/cgroup:ro
+      - /:/hostfs:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+      - metricbeat:/usr/share/metricbeat/data
+      - ./metricbeat/config/metricbeat.yml:/usr/share/metricbeat/metricbeat.yml:ro
+    command: >
+      sh -c 'metricbeat -e'
+    networks:
+      - elk
+
+  elasticsearch:
+    build:
+      context: elasticsearch/
+    container_name: elasticsearch
+    volumes:
+      - ./elasticsearch/config/elasticsearch.yml:/usr/share/elasticsearch/config/elasticsearch.yml:ro
+      - esdata:/usr/share/elasticsearch/data
+    ports:
+      - "9200:9200"
+      - "9300:9300"
+    environment:
+      ES_JAVA_OPTS: "-Xmx1g -Xms1g"
+    networks:
+      - elk
+    healthcheck:
+      interval: 20s
+      retries: 10
+      test: curl -s http://192.168.2.160:9200/_cluster/health | grep -vq '"status":"red"'
+
+  logstash:
+    build:
+      context: logstash/
+    container_name: logstash
+    volumes:
+      - ./logstash/config/logstash.yml:/usr/share/logstash/config/logstash.yml:ro
+      - ./logstash/pipeline:/usr/share/logstash/pipeline:ro
+    ports:
+      - "12201:12201/udp"
+    environment:
+      LS_JAVA_OPTS: "-Xmx1g -Xms1g"
+    networks:
+      - elk
+    depends_on:
+      - elasticsearch
+
+  kibana:
+    build:
+      context: kibana/
+    container_name: kibana
+    depends_on:
+      - elasticsearch
+    volumes:
+      - ./kibana/config/:/usr/share/kibana/config:ro
+    ports:
+      - "5601:5601"
+    networks:
+      - elk
+    healthcheck:
+      interval: 10s
+      retries: 20
+      test: curl --write-out 'HTTP %{http_code}' --fail --silent --output /dev/null http://192.168.2.160:5601/api/status
+
+volumes:
+  esdata:
+    driver: local
+  metricbeat:
+
+networks:
+  elk:
+    driver: bridge
